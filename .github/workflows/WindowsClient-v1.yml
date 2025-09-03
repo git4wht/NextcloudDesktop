@@ -61,7 +61,7 @@ jobs:
         run: |
           $outDir = "${{ github.workspace }}\out"
           $binDir = "${{ github.workspace }}\${{ env.CRAFT_TARGET }}\bin"
-          mkdir $outDir -ForceWindowsClient
+          mkdir $outDir -Force
 
           # Copy runtime files
           Copy-Item -Path $binDir\* -Destination $outDir -Recurse -Force
