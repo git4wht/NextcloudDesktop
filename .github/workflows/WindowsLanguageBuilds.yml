@@ -81,12 +81,14 @@ jobs:
           if (-not $runDir) { throw "Cannot determine runtime directory." }
 
           # 只保留目标语言翻译文件
-          $txDirs = @(
-            Join-Path $runDir "translations",
-            Join-Path $runDir "i18n",
-            Join-Path $runDir "resources\translations",
-            Join-Path $runDir "resources\i18n"
-          ) | Where-Object { Test-Path $_ }
+          $txDirs = @()
+          $txDirs += (Join-Path $runDir "translations")
+          $txDirs += (Join-Path $runDir "i18n")
+          $txDirs += (Join-Path $runDir "resources\translations")
+          $txDirs += (Join-Path $runDir "resources\i18n")
+          
+          # 只保留存在的目录
+          $txDirs = $txDirs | Where-Object { Test-Path $_ }
 
           foreach($t in $txDirs) {
             Get-ChildItem $t -Filter *.qm | Where-Object {
