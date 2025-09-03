@@ -1,0 +1,127 @@
+name: Windows Language Builds
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Windows Build (${{ matrix.lang }})
+    runs-on: windows-2022
+    strategy:
+      fail-fast: false
+      matrix:
+        lang: [en, zh_CN, zh_TW, ja]   # 按需修改
+
+    env:
+      CRAFT_TARGET: windows-msvc2022_64-cl
+      CRAFT_MASTER_LOCATION: ${{ github.workspace }}\CraftMaster
+      CRAFT_MASTER_CONFIG: ${{ github.workspace }}\craftmaster.ini
+      LANG_CODE: ${{ matrix.lang }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Craft Master with Nextcloud Client Deps
+        shell: pwsh
+        run: |
+          git clone -q --depth=1 https://invent.kde.org/packaging/craftmaster.git $env:CRAFT_MASTER_LOCATION
+          function craft() {
+            python "$env:CRAFT_MASTER_LOCATION\CraftMaster.py" --config "$env:CRAFT_MASTER_CONFIG" --target $env:CRAFT_TARGET -c $args
+            if($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+          craft --add-blueprint-repository "https://github.com/nextcloud/craft-blueprints-kde.git|stable-3.17|"
+          craft --add-blueprint-repository "https://github.com/nextcloud/desktop-client-blueprints.git|stable-3.17|"
+          craft craft
+          craft --install-deps nextcloud-client
+
+      - name: Install Inkscape (for icon tasks)
+        shell: pwsh
+        run: choco install inkscape --no-progress -y
+
+      - name: Setup PATH
+        shell: pwsh
+        run: |
+          echo "${{ github.workspace }}\${{ env.CRAFT_TARGET }}\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      - name: Compile (Nextcloud Desktop)
+        shell: pwsh
+        run: |
+          function craft() {
+            python "$env:CRAFT_MASTER_LOCATION\CraftMaster.py" --config "$env:CRAFT_MASTER_CONFIG" --target $env:CRAFT_TARGET -c $args
+            if($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+          craft --src-dir "${{ github.workspace }}" nextcloud-client
+
+      - name: Prepare language-specific package
+        shell: pwsh
+        run: |
+          $ws = "${{ github.workspace }}"
+          $target = "${{ env.CRAFT_TARGET }}"
+          $buildRoot = Join-Path $ws "$target\build\nextcloud-client\work\build"
+          $binCandidate1 = Join-Path $buildRoot "bin"
+          $binCandidate2 = Join-Path $ws "$target\bin"
+          $installCandidate1 = Join-Path $ws "$target\install"
+          $outDir = "$ws\out\${{ matrix.lang }}"
+          New-Item -ItemType Directory -Force -Path $outDir | Out-Null
+
+          # 找运行目录
+          $runDir = $null
+          foreach($p in @($binCandidate1,$binCandidate2,$installCandidate1)) {
+            if (Test-Path $p) { $runDir = $p; break }
+          }
+
+          if (-not $runDir) { throw "Cannot determine runtime directory." }
+
+          # 只保留目标语言翻译文件
+          $txDirs = @(
+            Join-Path $runDir "translations",
+            Join-Path $runDir "i18n",
+            Join-Path $runDir "resources\translations",
+            Join-Path $runDir "resources\i18n"
+          ) | Where-Object { Test-Path $_ }
+
+          foreach($t in $txDirs) {
+            Get-ChildItem $t -Filter *.qm | Where-Object {
+              $name = $_.Name
+              -not ($name -match "(${env:LANG_CODE}|en)\.qm$")
+            } | Remove-Item -Force -ErrorAction SilentlyContinue
+          }
+
+          Copy-Item -Path $runDir -Destination (Join-Path $outDir "runtime") -Recurse -Force
+          $zipPath = "$ws\NextcloudDesktop-${{ matrix.lang }}.zip"
+          if (Test-Path $zipPath) { Remove-Item $zipPath -Force }
+          Compress-Archive -Path "$outDir\*" -DestinationPath $zipPath
+          echo "ZIP_PATH=$zipPath" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: nextcloud-desktop-${{ matrix.lang }}
+          path: ${{ env.ZIP_PATH }}
+
+  release:
+    name: Create Release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: nightly-${{ github.run_number }}
+          name: "Windows Language Builds ${{ github.run_number }}"
+          files: dist/**/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
